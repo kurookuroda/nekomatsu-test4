@@ -1,0 +1,226 @@
+diff --git a/nekoatsume-pyxel/README.md b/nekoatsume-pyxel/README.md
+index 93828a0..14e3dea 100644
+--- a/nekoatsume-pyxel/README.md
++++ b/nekoatsume-pyxel/README.md
+@@ -8,17 +8,20 @@ Pyxel で作る「ねこあつめ」風の放置ゲーム(いまは文字だけ
+ 
+ ```
+ nekoatsume-pyxel/
+-├── nekoatsume.py              # Pyxel の UI(起動するスクリプト)
++├── nekoatsume.py              # Pyxel の UI(起動するスクリプト。画面・タップ操作・セーブ)
++├── config.py                  # 画面サイズ・色・レイアウトなどの定数、ヘルプ文、小さな関数
++├── ui.py                      # 文字表示のパーツ(Typewriter = 1文字ずつ表示 / PagedText = ページ送り)
++├── audio.py                   # 音(AudioManager = タイプ音と猫の鳴き声)
+ ├── game.py                    # ゲームのルール(Pyxel に依存しない)
+ ├── catalog.py                 # アイテム・猫のデータ表(ここに足すだけで増やせる)
+ ├── test_game.py               # ルールのテスト(pytest)
+ ├── tools/ui_smoke.py          # UI のスモークテスト(タップ操作の再現とスクリーンショット)
+ ├── PixelMplus12-Regular.ttf   # 日本語ピクセルフォント 12px(要ライセンス確認・下記参照)
+-├── PixelMplus10-Regular.ttf   # 同 10px(nekoatsume.py の FONT_PATH / FONT_SIZE で切り替え)
++├── PixelMplus10-Regular.ttf   # 同 10px(config.py の FONT_PATH / FONT_SIZE で切り替え)
+ └── README.md
+ ```
+ 
+-`nekoatsume.py` と `game.py` と `catalog.py` とフォントは **リポジトリ直下(フラット)** に置きます
++`nekoatsume.py` と `config.py` と `ui.py` と `audio.py` と `game.py` と `catalog.py` とフォントは **同じフォルダにフラットに** 置きます
+ (Pyxel Web Launcher はスクリプトと同じ場所のファイルを読むため)。
+ 
+ ## 遊び方
+@@ -46,35 +49,29 @@ nekoatsume-pyxel/
+ ## セーブ
+ 
+ `pyxel.user_data_dir()` が返すフォルダの `save.json` に、操作のたびと1分ごとに自動保存します。
++環境変数 `NEKOATSUME_SAVE_DIR` を設定すると、保存先をそのフォルダにできます(テスト用)。
+ ブラウザ版で、ページを閉じても残るかどうかは、まだ確認できていません(下記)。
+ 
+ ## 開発
+ 
+ ```
+ pip install pyxel pytest
+-pytest -q                          # ゲームのルール(32 件。猫1000匹・商品600種類の規模テストを含む)
++pytest -q                          # ゲームのルール(34 件。猫1000匹・商品600種類の規模テストを含む)
+ python3 tools/ui_smoke.py          # UI(画面のない Linux では xvfb-run を付ける。tools/ui_smoke.py 冒頭を参照)
+ pyxel package . nekoatsume.py      # 複数ファイルを .pyxapp にまとめる(Launcher の ?play= や app2html で使える)
+ ```
+ 
+-## 猫の鳴き声(録音した音声を使う)
++## 猫の鳴き声(ゲーム内で作った音)
+ 
+ 猫が去るとき(ログに「◯◯が帰った」の行が出はじめるとき)に、その猫の鳴き声が1回鳴ります。
+-声は、**自分で録音した音声ファイル**を使います(このゲームでは、作った音は使いません)。
+-
+-- **置き場所と名前**: `nekoatsume.py` と同じフォルダに、`meow_1.wav`、`meow_2.wav`、`meow_3.wav` … と番号順に置きます。番号が途切れたところまで読みます。
+-  猫にどの声を割り当てるかは、猫のIDから決まります(同じ猫はいつも同じ声。猫が何匹に増えても、声が3種類なら3種類のままで足ります)。
+-- **特定の猫だけ専用の声**にするときは、`catalog.py` のその猫の個性に `{"voice": "tarawa"}` と書き、`meow_tarawa.wav` を置きます。
+-- **形式**: WAV がいちばん確実です(モノラル・22050Hz・16bit がおすすめ。1秒で約44KB)。OGG / MP3 / FLAC も読めます。
+-  iPhone のボイスメモ(m4a)や opus は読めないので、変換してください。
+-
+-  ```
+-  ffmpeg -i 録音.m4a -ac 1 -ar 22050 meow_1.wav
+-  ```
+-- **録音のコツ**: 0.5〜1.5秒ほどに切り、前後の無音を削ります。音量は、文字が出るときのタイプ音より少し大きい程度が目安です(大きすぎると、猫が去るたびに耳につきます)。
+-- ファイルが1つも無いときは、鳴き声が鳴らないだけで、エラーにはなりません。壊れているファイルは飛ばして、コンソールに名前を出します。
++音は、Pyxel の `Sound` でゲーム内で作った短い音を使います(`audio.py`)。**音声ファイルは要りません**。
++ブラウザ版でも鳴らすため、録音した WAV などは読み込まない作りにしています。
++
++- **声は3種類**(高め・低め・子猫風)。どれを使うかは猫のIDから決まります(同じ猫はいつも同じ声。猫が何匹に増えても、声は3種類のままです)。
+ - 鳴き声はチャンネル2、タイプ音はチャンネル3で鳴るので、文字が出ていても鳴き声が途切れません。
+-- 離れていた間のまとめ処理(数分以上)や、タップで「できごと」を飛ばしたときは、鳴りません。
++- 離れていた間のまとめ処理(3分を超えるとき)や、タップで「できごと」を飛ばしたときは、鳴りません。
++- `catalog.py` の猫の個性に `{"voice": "tarawa"}` と書く口は残してありますが、専用の声を登録する場所(`AudioManager.meow_named`)は空です。
++  いまは書いても効果はなく、3種類のどれかで鳴ります。
+ 
+ ## 猫・アイテムを増やす
+ 
+@@ -123,17 +120,18 @@ ID は英数字とアンダースコアで、セーブデータのキーにな
+ 
+ 確認済み(Linux + 仮想ディスプレイ):
+ 
+-- ゲームのルール(pytest 32 件)と、猫1000匹・商品600種類での動作・速度・セーブの大きさ
++- ゲームのルール(pytest 34 件)と、猫1000匹・商品600種類での動作・速度・セーブの大きさ
+ - UI の画面遷移・購入・配置・エサの置き換え・受け取り・セーブ/ロード
+ - ページ送り(長い紹介文・ヘルプ・長いメッセージ)で、文章が枠の下や右にはみ出さないこと
+ - スクロールバーのドラッグ(猫300匹・商品600件)と、種別タブが多いときの ◀ ▶
+-- `pyxel package` で .pyxapp を作れること
++- `pyxel package` で .pyxapp を作れること(`config.py` / `ui.py` / `audio.py` に分けたあとも、ファイルは全部入る)
+ 
+ **未確認(公開前に確認したいこと)**:
+ 
+ - `catalog.py` を足したあとの Pyxel Web Launcher での起動(`game.py` の import は確認済み)
+-- **ブラウザ版(Launcher)で、録音した音声ファイル(`meow_*.wav`)が読み込まれるか**(デスクトップでは、WAV・OGG・MP3・FLAC の読み込みを確認済み)。
+-  読めない場合は、`.pyxapp` にまとめて `?play=` で動かす方法を試します
++- `config.py` / `ui.py` / `audio.py` に分けたあとの、Pyxel Web Launcher での起動(モジュールが増えたぶん、import が通るか)。
++  通らない場合は、`.pyxapp` にまとめて `?play=` で動かす方法を試します
++- **ブラウザ版(Launcher)で、猫の鳴き声(ゲーム内で作った音)が鳴るか**
+ - ブラウザ版で `user_data_dir` のセーブが、ページを閉じても残るか
+ - スマホ実機でのタップとドラッグスクロール
+ - フォントのライセンスと同梱可否
+diff --git a/nekoatsume-pyxel/catalog.py b/nekoatsume-pyxel/catalog.py
+index 8a80d36..4a91ada 100644
+--- a/nekoatsume-pyxel/catalog.py
++++ b/nekoatsume-pyxel/catalog.py
+@@ -49,7 +49,8 @@ FOODS = [
+ # 猫: (ID, 名前, 紹介文, お宝) または (ID, 名前, 紹介文, お宝, {個性の上書き})
+ #   個性: strength(押し出す強さ・既定5), entry_chance(来訪率・既定0.1), time_limit(滞在の上限分・既定30),
+ #         fav_toy(好きなおもちゃID), exclusive(好物しか使わない),
+-#         voice(専用の鳴き声。"tarawa" と書くと、録音ファイル meow_tarawa.wav で鳴く。省略すると meow_1.wav, meow_2.wav … のどれか)
++#         voice(専用の鳴き声の名前。AudioManager.meow_named に同じ名前の声が登録されていれば、それで鳴く。
++#               いまは登録がないので、書いても効果はなく、3種類の生成音のどれかで鳴く)
+ CATS = [
+     ('gordo', 'ゴードー', 'いつもあなたのごはんを食べにくる、いちばん手のかかる猫', '役に立たない木切れ(ゴードーだから)'),
+     ('pukka', 'プッカ', 'クリーム色のぶちがある白い短毛で、緑の目の猫。レーザーを追いかけたり、サーフィンをするのが大好き', 'サーフワックスのかたまり'),
+diff --git a/nekoatsume-pyxel/game.py b/nekoatsume-pyxel/game.py
+index 810d8fd..641d505 100644
+--- a/nekoatsume-pyxel/game.py
++++ b/nekoatsume-pyxel/game.py
+@@ -14,6 +14,7 @@
+     3. アイテム種別(toy / food)を size の閾値ではなく kind で判定する
+     4. 内部IDと表示名を分離した(セーブデータのキーは ID)
+     5. おもちゃを庭から外したとき、遊んでいた猫はさかなを置いて帰る(元は無報酬で追い出していた)
++    6. エサを置き換えるとき、残りが捨てられることを確認する(set_food が need_confirm を返し、UI がダイアログを出す)
+ 
+ 規模への備え(猫が1000匹、商品が数百種類になっても困らないように)
+     - アイテムと猫のデータは catalog.py の表にある(コードに埋め込まない)。load_catalog() で差し替えもできる
+diff --git a/nekoatsume-pyxel/tools/ui_smoke.py b/nekoatsume-pyxel/tools/ui_smoke.py
+index 9e62d42..4431864 100644
+--- a/nekoatsume-pyxel/tools/ui_smoke.py
++++ b/nekoatsume-pyxel/tools/ui_smoke.py
+@@ -25,29 +25,6 @@ import nekoatsume as N           # noqa: E402
+ SHOT_DIR = os.environ.get("SHOT_DIR", os.path.join(SAVE_DIR, "shots"))
+ os.makedirs(SHOT_DIR, exist_ok=True)
+ 
+-import math                    # noqa: E402
+-import struct                  # noqa: E402
+-import wave                    # noqa: E402
+-
+-
+-def write_wav(path, freq, sec=0.3, sr=22050):
+-    with wave.open(path, "wb") as w:
+-        w.setnchannels(1)
+-        w.setsampwidth(2)
+-        w.setframerate(sr)
+-        w.writeframes(b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * freq * i / sr)))
+-                               for i in range(int(sr * sec))))
+-
+-
+-AUDIO = os.path.join(SAVE_DIR, "audio")
+-os.makedirs(AUDIO, exist_ok=True)
+-write_wav(os.path.join(AUDIO, "meow_1.wav"), 500)
+-write_wav(os.path.join(AUDIO, "meow_2.wav"), 700)
+-with open(os.path.join(AUDIO, "meow_3.wav"), "wb") as f:      # 壊れたファイル(飛ばされるはず)
+-    f.write(b"this is not a wav")
+-write_wav(os.path.join(AUDIO, "meow_4.wav"), 900)              # 3 が壊れていても 4 は読む
+-N.MEOW_DIR = AUDIO
+-
+ app = N.App(run=False)
+ drawn = []                       # 画面に描いた文字を全部覚えておく
+ _orig_tx = app.tx
+@@ -249,8 +226,8 @@ for _ in range(120):
+ settle(); frame(); shot("06_yard_playing")
+ assert game.met_list(app.state), "猫が来ているはず"
+ 
+-# ---- 猫が去るときの鳴き声(録音ファイル)
+-assert len(app.meow_pool) == 3, len(app.meow_pool)              # 1, 2, 4(壊れた 3 は飛ばす)
++# ---- 猫が去るときの鳴き声(ゲーム内で作った音。AudioManager)
++assert len(app.audio.meow_pool) == 3, len(app.audio.meow_pool)      # 高め・低め・子猫風
+ # 実時間に近い進め方(1分ごとに、文字が出きるまで待つ): 猫が去った行が出はじめるたびに、鳴き声が1回鳴る
+ plays.clear(); voiced.clear()
+ for _ in range(60):
+@@ -265,39 +242,38 @@ assert voiced, "猫が去った行があるはず"
+ assert len(meows) == len(voiced), (len(meows), len(voiced))
+ assert all("帰った" in text for text, _c in voiced)
+ assert all(c in (N.MEOW_CHANNEL, 3) for c in plays), "鳴き声はチャンネル2、タイプ音はチャンネル3"
+-# 声の選び方: 同じ猫はいつも同じ声。番号つきの声は、猫が多くてもぜんぶ使われる
+-assert app._meow_for("gordo") is app._meow_for("gordo")
+-used = {id(app._meow_for("cat%04d" % i)) for i in range(1000)}
++# 声の選び方: 同じ猫はいつも同じ声。猫が多くても、3種類ぜんぶが使われる
++assert app.audio.meow_for("gordo") is app.audio.meow_for("gordo")
++used = {id(app.audio.meow_for("cat%04d" % i)) for i in range(1000)}
+ assert len(used) == 3
+-# 離れていた間のまとめ処理(数分以上)では、鳴らさない・行も出さない
++# 離れていた間のまとめ処理(3分を超えるとき)では、鳴らさない・行も出さない
+ n_voiced, n_plays = len(voiced), len(plays)
+ T[0] += 3600 * 10
+ frame()
+ assert len(voiced) == n_voiced and len(plays) == n_plays, "まとめて進めたときは鳴らさない"
+ 
+-# ---- 専用の声(catalog の個性に voice を書いた猫)
+-write_wav(os.path.join(AUDIO, "meow_tarawa.wav"), 300)
++# ---- 専用の声(catalog の個性に voice を書いた猫)。専用の声が登録されていれば使い、なければ 3 種類のどれか
++assert app.audio.meow_named == {}
+ cats = [(c[0], c[1], c[2], c[3]) + ((dict(c[4], voice="tarawa"),) if len(c) > 4 and c[0] == "tarawa" else c[4:])
+         for c in catalog.CATS]
+ game.load_catalog(catalog.TOYS, catalog.FOODS, cats, catalog.CATEGORIES)
+-app._init_meows()
+-assert "tarawa" in app.meow_named
+-assert app._meow_for("tarawa") is app.meow_named["tarawa"]
+-assert app._meow_for("gordo") in app.meow_pool
++assert app.audio.meow_for("tarawa") in app.audio.meow_pool
++special = pyxel.Sound()
++special.set("c3", "p", "3", "n", 6)
++app.audio.meow_named["tarawa"] = special
++assert app.audio.meow_for("tarawa") is special
++assert app.audio.meow_for("gordo") in app.audio.meow_pool
++del app.audio.meow_named["tarawa"]
+ game.load_catalog(catalog.TOYS, catalog.FOODS, catalog.CATS, catalog.CATEGORIES)
+-app._init_meows()
+-assert app.meow_named == {}
+ 
+-# ---- 音声ファイルが1つも無いとき: 鳴らないだけで、エラーにならない
+-N.MEOW_DIR = os.path.join(SAVE_DIR, "no_such_dir")
+-app._init_meows()
+-assert app.meow_pool == [] and app._meow_for("gordo") is None
++# ---- 鳴き声の音が1つも無いとき: 鳴らないだけで、エラーにならない
++saved_pool = app.audio.meow_pool
++app.audio.meow_pool = []
++assert app.audio.meow_for("gordo") is None
+ n_plays = len(plays)
+ app._play_meow("gordo")
+ assert len(plays) == n_plays
+-N.MEOW_DIR = AUDIO
+-app._init_meows()
+-assert len(app.meow_pool) == 3
++app.audio.meow_pool = saved_pool
+ n = len(app.state["pending_money"])
+ click(8 + 59, 194 + 10)                                    # さかなを受け取る
+ assert app.state["pending_money"] == [] or n == 0
