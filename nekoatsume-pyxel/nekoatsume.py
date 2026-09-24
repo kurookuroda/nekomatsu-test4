@@ -29,19 +29,21 @@ class App:
 
         # 画面の状態
         self.screen = "yard"
-        self.sub = {"bag": None}               # もちものの種別タブ。None=何も押していない(すべて) 0=おもちゃ 1=エサ
-        self.selected = {"shop": None, "cats": None}
+        self.sub = {"bag": None, "cats": 0}    # bag: None=すべて 0=おもちゃ 1=エサ 2=所持品 / cats: 0=猫 1=ひと
+        self.selected = {"shop": None, "cats": None, "people": None}
         self.scroll = {}
         self.log = []                          # [{"full": 折り返し済みテキスト, "revealed": int}]
         self.log_timer = 0
         self.toast = None                      # {"col":..., "frames":...}
         self.toast_tw = Typewriter()
-        self.cat_pager = PagedText()           # 図鑑の猫のプロフィール
+        self.cat_pager = PagedText()           # ずかん(猫)のプロフィール
+        self.person_pager = PagedText()        # ずかん(ひと)のプロフィール
         self.shop_pager = PagedText()          # ショップの商品説明
         self.help_pager = PagedText()          # ヘルプ
         self.message = None                    # 長いメッセージのダイアログ {"pager": PagedText}
         self.pager_regs = []                   # このフレームに描いたページ送りの枠 [(pager, x, y, w, h)]
         self.modal = None                      # {"text":..., "yes": fn}
+        self.give_picker = None                # あげる相手を選ぶ小窓。所持品のID、または None
         self.hits = []
         self.areas = []
         self.press = None
@@ -453,6 +455,8 @@ class App:
             self.draw_toast()
         if self.modal:
             self.draw_modal()
+        if self.give_picker:
+            self.draw_give_picker()
         if self.message:
             self.draw_message()
 
@@ -509,11 +513,46 @@ class App:
     def _modal_no(self):
         self.modal = None
 
+    def draw_give_picker(self):
+        self.hits, self.areas, self.pager_regs = [], [], []     # 背後の操作は無効にする
+        s = self.state
+        item_id = self.give_picker
+        recipients = [aid for aid in game.ACTORS if aid in s["met_actors"] and game.ACTORS[aid]["kind"] == "person"]
+        x, y, w = 24, 70, SCREEN_W - 48
+        h = 34 + max(len(recipients), 1) * ROW_H
+        self.draw_panel(x, y, w, h)
+        self.tx(x + 10, y + 8, "{0}を、だれにあげる?".format(game.GOODS[item_id]["name"]), C_TEXT)
+        if not recipients:
+            self.tx(x + 10, y + 26, "渡せる相手にまだ出会っていません", C_SUB)
+        for i, aid in enumerate(recipients):
+            ry = y + 24 + i * ROW_H
+            self.button(x + 10, ry, w - 20, ROW_H - 2, game.ACTORS[aid]["name"],
+                        lambda aid=aid: self.do_give(aid))
+        self.close_button(x + w - 20, y + 6, 14, 14, self.close_give_picker)
+
+    def close_give_picker(self):
+        self.give_picker = None
+
+    def do_give(self, actor_id):
+        item_id = self.give_picker
+        self.give_picker = None
+        r = game.give(self.state, actor_id, item_id)
+        self.show_toast(r.msg, C_GOOD if r.ok else C_BAD)
+        if r.ok:
+            self.save()
+
+    def open_give_picker(self, item_id):
+        s = self.state
+        if not any(game.ACTORS[aid]["kind"] == "person" for aid in s["met_actors"]):
+            self.show_toast("渡せる相手にまだ出会っていません。", C_BAD)
+            return
+        self.give_picker = item_id
+
     # ---- にわ
     def draw_yard(self):
         s = self.state
         if s["food"]:
-            self.tx(8, 22, "エサ: {0} 残り{1}分".format(game.FOODS[s["food"]]["name"], s["food_remaining"]), C_GOOD)
+            self.tx(8, 22, "エサ: {0} 残り{1}".format(game.FOODS[s["food"]]["name"], round(s["food_remaining"])), C_GOOD)
         else:
             self.tx(8, 22, "エサがありません(もちもの→エサ)", C_BAD)
 
@@ -577,13 +616,17 @@ class App:
         self.save()
 
     # ---- ショップ
-    def sub_tabs(self, screen, y=20):
-        """もちものの種別タブ。最初は何も押されていない(=すべて表示)。押したタブをもう一度押すと解除される。"""
-        for i, label in enumerate(("おもちゃ", "エサ")):
+    def sub_tabs(self, screen, labels, y=20):
+        """画面内の種別タブ。bag は最初は何も押されていない(=すべて表示)で、押したタブをもう一度押すと解除される。
+        それ以外(cats など)は常にどれか1つが選ばれている。"""
+        for i, label in enumerate(labels):
             self.button(8 + i * 68, y, 64, 16, label, lambda i=i: self.set_sub(screen, i), active=(self.sub[screen] == i))
 
     def set_sub(self, screen, i):
-        self.sub[screen] = None if self.sub[screen] == i else i
+        if screen == "bag":
+            self.sub[screen] = None if self.sub[screen] == i else i
+        else:
+            self.sub[screen] = i
         self.selected[screen] = None
 
     def arrow_button(self, x, y, w, h, direction, fn, enabled=True):
@@ -726,13 +769,13 @@ class App:
         self.selected[screen] = item_id
 
     def _shop_info(self, item_id):
-        """商品の説明文(庭を使うマス数・エサのもつ時間を添える)。"""
+        """商品の説明文(庭を使うマス数・エサの量を添える)。"""
         it = game.ITEMS[item_id]
         info = it["desc"]
         if it["kind"] == "toy" and it["size"] > 1:
             info += "(庭を{0}マス使う)".format(it["size"])
         if it["kind"] == "food":
-            info += "(約{0}分もつ)".format(it["size"])
+            info += "(量: {0})".format(it["size"])
         return info
 
     def select_shop(self, item_id):
@@ -758,42 +801,51 @@ class App:
     # ---- もちもの
     def draw_bag(self):
         s = self.state
-        self.sub_tabs("bag")
+        self.sub_tabs("bag", ("おもちゃ", "エサ", "所持品"))
         self.tx_right(SCREEN_W - 8, 22, "庭 {0}/{1}マス".format(game.space_used(s), game.SPACE), C_SUB)
 
         sub = self.sub["bag"]
         toys = list(s["owned_toys"])
         foods = [f for f in game.FOODS if s["food_stock"].get(f, 0) > 0]
+        goods = sorted(s["owned_goods"])                   # set なので、表示順を安定させる
         if sub == 0:
             ids, empty = toys, "おもちゃを持っていません。ショップで買おう"
         elif sub == 1:
             ids, empty = foods, "エサを持っていません。ショップで買おう"
-        else:                                              # 何も押していない: 持っているものぜんぶ(おもちゃ→エサ)
-            ids, empty = toys + foods, "まだ何も持っていません。ショップで買おう"
+        elif sub == 2:
+            ids, empty = goods, "取引品(あげる物)を持っていません"
+        else:                                              # 何も押していない: 持っているものぜんぶ
+            ids, empty = toys + foods + goods, "まだ何も持っていません。ショップで買おう"
 
         if not ids:
             self.tx(12, 46, empty, C_SUB)
 
         def row(i, ry, clip):
             item_id = ids[i]
-            it = game.ITEMS[item_id]
-            if it["kind"] == "toy":
-                placed = item_id in s["yard"]
-                extra = "({0}マス)".format(it["size"]) if it["size"] > 1 else ""
-                self.tx(12, ry + 2, it["name"] + extra, C_TEXT)
-                self.tx_right(ROW_RIGHT, ry + 2, "置いてある" if placed else "置く", C_GOOD if placed else C_SUB)
-                fn = (lambda t=item_id: self.do_toggle_toy(t))
+            if item_id in game.GOODS:
+                g = game.GOODS[item_id]
+                self.tx(12, ry + 2, g["name"], C_TEXT)
+                self.tx_right(ROW_RIGHT, ry + 2, "あげる", C_SUB)
+                fn = (lambda g=item_id: self.open_give_picker(g))
             else:
-                self.tx(12, ry + 2, "{0} ×{1}".format(it["name"], s["food_stock"][item_id]), C_TEXT)
-                self.tx_right(ROW_RIGHT, ry + 2, "置く", C_SUB)
-                fn = (lambda f=item_id: self.do_set_food(f))
+                it = game.ITEMS[item_id]
+                if it["kind"] == "toy":
+                    placed = item_id in s["yard"]
+                    extra = "({0}マス)".format(it["size"]) if it["size"] > 1 else ""
+                    self.tx(12, ry + 2, it["name"] + extra, C_TEXT)
+                    self.tx_right(ROW_RIGHT, ry + 2, "置いてある" if placed else "置く", C_GOOD if placed else C_SUB)
+                    fn = (lambda t=item_id: self.do_toggle_toy(t))
+                else:
+                    self.tx(12, ry + 2, "{0} ×{1}".format(it["name"], s["food_stock"][item_id]), C_TEXT)
+                    self.tx_right(ROW_RIGHT, ry + 2, "置く", C_SUB)
+                    fn = (lambda f=item_id: self.do_set_food(f))
             self.hit(8, ry, SCREEN_W - 16, ROW_H, fn, clip)
 
         self.list_view("bag-" + str(self.sub["bag"]), 8, 40, SCREEN_W - 16, 150, len(ids), row)
 
         self.draw_panel(8, 196, SCREEN_W - 16, 28)
         if s["food"]:
-            self.tx(14, 203, "庭のエサ: {0} 残り{1}分".format(game.FOODS[s["food"]]["name"], s["food_remaining"]), C_GOOD)
+            self.tx(14, 203, "庭のエサ: {0} 残り{1}".format(game.FOODS[s["food"]]["name"], round(s["food_remaining"])), C_GOOD)
         else:
             self.tx(14, 203, "庭のエサ: なし", C_BAD)
 
@@ -822,9 +874,16 @@ class App:
         if r.ok:
             self.save()
 
-    # ---- おたから(猫の図鑑)
+    # ---- ずかん(猫のプロフィール / 出会った人のプロフィール)
     def draw_cats(self):
-        """図鑑は「出会った順」に並ぶ。猫がはじめて庭に来たときに、その順番の位置が決まる。
+        self.sub_tabs("cats", ("猫", "ひと"))
+        if self.sub["cats"] == 1:
+            self.draw_people()
+        else:
+            self.draw_cat_dex()
+
+    def draw_cat_dex(self):
+        """猫は「出会った順」に並ぶ。猫がはじめて庭に来たときに、その順番の位置が決まる。
         まだ出会っていない猫の数や、全部で何匹いるかは出さない(出会いの楽しみを取っておくため)。"""
         s = self.state
         met = game.met_list(s)
@@ -838,7 +897,7 @@ class App:
             self.tx_right(ROW_RIGHT, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
             self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda cid=cid: self.select("cats", cid), clip)
 
-        list_y, list_h = HEADER_H + 6, 4 * ROW_H          # 4行分。プロフィールを6行まで1ページに収めるため
+        list_y, list_h = 40, 4 * ROW_H          # 4行分。プロフィールを6行まで1ページに収めるため(サブタブの分だけ下げた)
         if not met:
             self.tx(12, list_y + 4, "猫が遊びに来ると、ここに載ります", C_SUB)
         self.list_view("cats", 8, list_y, SCREEN_W - 16, list_h, len(met), row)
@@ -866,6 +925,50 @@ class App:
                 (spec["desc"], C_TEXT),
                 ("いま: " + now, C_SUB),
                 ("お宝:「{0}」".format(treasure), C_ACCENT if c["given_treasure"] else C_DIM)]
+
+    def draw_people(self):
+        """出会った訪問者・人だけが載る(猫の図鑑と同じ考え方)。"""
+        s = self.state
+        met = [aid for aid in game.ACTORS if aid in s["met_actors"]]
+
+        def row(i, ry, clip):
+            aid = met[i]
+            m = s["met_actors"][aid]
+            if self.selected["people"] == aid:
+                pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
+            self.tx(12, ry + 2, ("★ " if m["rewarded"] else "") + game.ACTORS[aid]["name"], C_TEXT)
+            self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda aid=aid: self.select("people", aid), clip)
+
+        list_y, list_h = 40, 4 * ROW_H
+        if not met:
+            self.tx(12, list_y + 4, "だれかに出会うと、ここに載ります", C_SUB)
+        self.list_view("people", 8, list_y, SCREEN_W - 16, list_h, len(met), row)
+
+        panel_y = list_y + list_h + 6
+        panel_h = TAB_Y - 4 - panel_y
+        self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
+        sel = self.selected["people"]
+        if sel in s["met_actors"]:
+            self.person_pager.set(("person", sel), self._person_blocks(sel), self.wrap, SCREEN_W - 16, panel_h, group=sel)
+            self.person_pager.draw(self, 8, panel_y)
+            self.pager_regs.append((self.person_pager, 8, panel_y, SCREEN_W - 16, panel_h))
+        else:
+            self.tx(14, panel_y + 6, "タップしてね" if met else "何かが変わると、誰かに出会えるかもしれません", C_SUB)
+
+    def _person_blocks(self, aid):
+        spec = game.ACTORS[aid]
+        m = self.state["met_actors"][aid]
+        kind_label = "訪問者" if spec["kind"] == "visitor" else "住人"
+        if m["rewarded"]:
+            status = "大事な物を受け取った"
+        elif m["trust"] > 0:
+            status = "何かをあげたことがある"
+        else:
+            status = "まだ何もあげていない"
+        return [(spec["name"], C_ACCENT),
+                ("({0})".format(kind_label), C_SUB),
+                (spec["desc"], C_TEXT),
+                (status, C_ACCENT if m["rewarded"] else C_SUB)]
 
     # ---- ヘルプ
     def draw_help(self):

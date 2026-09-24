@@ -39,6 +39,11 @@ TREASURE_MINUTES = 3000        # 累計滞在がこれを超えるとお宝を�
 GOLD_ONE_IN = 30               # 報酬が金になる確率(1/N)
 WEEK_SECONDS = 7 * 24 * 3600
 
+DEFAULT_TRAITS = {"appetite": 0.5, "friendly": 0.5, "wary": 0.5}   # 個性の既定値(0.0〜1.0)
+FOOD_CONSUME_PER_APPETITE = 1.0    # appetite=1.0 の猫が1tickで食べるエサの量
+FULLNESS_PER_FOOD_UNIT = 0.02      # 食べた量 → 満腹度(0〜1)への変換率
+FULLNESS_DECAY_PER_TICK = 0.01     # 何も食べていない間、1tickごとに満腹度が下がる速さ
+
 Result = namedtuple("Result", "ok code msg")
 
 
@@ -47,15 +52,25 @@ def _toy(name, cost, cur, size, desc):
     return {"kind": "toy", "name": name, "cost": cost, "cur": cur, "size": size, "desc": desc}
 
 
-def _food(name, cost, cur, minutes, desc):
-    return {"kind": "food", "name": name, "cost": cost, "cur": cur, "size": minutes, "desc": desc}
+def _food(name, cost, cur, amount, tags, desc):
+    return {"kind": "food", "name": name, "cost": cost, "cur": cur, "size": amount,
+            "tags": dict(tags or {}), "desc": desc}
 
 
 def _cat(name, desc, treasure, strength=5, entry_chance=0.1, time_limit=30, fav_toy="", exclusive=False,
-         voice=""):
+         voice="", traits=None, taste=None, sex=None, affinity=None):
     return {"name": name, "desc": desc, "treasure": treasure, "strength": strength,
             "entry_chance": entry_chance, "time_limit": time_limit,
-            "fav_toy": fav_toy, "exclusive": exclusive, "voice": voice}
+            "fav_toy": fav_toy, "exclusive": exclusive, "voice": voice,
+            "traits": dict(traits) if traits else dict(DEFAULT_TRAITS),
+            "taste": dict(taste or {}), "sex": sex, "affinity": dict(affinity or {})}
+
+
+def taste_score(cat_taste, food_tags):
+    """猫の好み(taste)とエサの好みタグ(food_tags)の一致度。情報が無ければ中立の 0.5。"""
+    if not cat_taste or not food_tags:
+        return 0.5
+    return sum(cat_taste.get(tag, 0.0) * weight for tag, weight in food_tags.items())
 
 
 # load_catalog() が埋める。他のモジュールは game.ITEMS のように、使う時に参照すること(差し替えに追従するため)
@@ -65,12 +80,27 @@ FOODS = {}
 IDS_BY_KIND = {}    # 種別 -> アイテムIDのリスト(表の並び順)
 CATS = {}           # 猫ID -> 仕様(表の並び順)
 CATEGORIES = []     # ショップの種別 [(種別ID, 表示名)]
+GOODS = {}          # 物(取引品)ID -> 仕様
+ACTORS = {}         # 訪問者・人ID -> 仕様(表の並び順)
 CATALOG_VERSION = 0     # load_catalog() のたびに増える(UI 側のキャッシュ無効化用)
 
 
-def load_catalog(toys, foods, cats, categories):
-    """アイテムと猫のデータ表を読み込む(既定は catalog.py)。ID の重複や不正な値は ValueError。"""
-    global ITEMS, TOYS, FOODS, IDS_BY_KIND, CATS, CATEGORIES, CATALOG_VERSION
+def _good(name, tags, desc):
+    return {"name": name, "tags": dict(tags or {}), "desc": desc}
+
+
+def _actor(kind, name, desc, requires=None, wants=None, one_time_reward=None,
+           milestones=None, casual_gifts=None):
+    return {"kind": kind, "name": name, "desc": desc, "requires": requires,
+            "wants": dict(wants or {}),
+            "one_time_reward": dict(one_time_reward) if one_time_reward else None,
+            "milestones": list(milestones or []), "casual_gifts": list(casual_gifts or [])}
+
+
+def load_catalog(toys, foods, cats, categories, goods=(), actors=()):
+    """アイテムと猫、物・訪問者/人のデータ表を読み込む(既定は catalog.py)。
+    ID の重複や不正な値は ValueError。"""
+    global ITEMS, TOYS, FOODS, IDS_BY_KIND, CATS, CATEGORIES, GOODS, ACTORS, CATALOG_VERSION
     items, cat_specs = {}, {}
     for row in toys:
         iid = row[0]
@@ -98,16 +128,36 @@ def load_catalog(toys, foods, cats, categories):
         if it["kind"] not in ids_by_kind:
             raise ValueError("item %s has no category" % iid)
         ids_by_kind[it["kind"]].append(iid)
+
+    good_specs = {}
+    for row in goods:
+        gid, name, tags, desc = row
+        if gid in good_specs:
+            raise ValueError("duplicate good id: %s" % gid)
+        if gid in items:
+            raise ValueError("good id collides with an item id: %s" % gid)
+        good_specs[gid] = _good(name, tags, desc)
+
+    actor_specs = {}
+    for row in actors:
+        aid = row[0]
+        if aid in actor_specs:
+            raise ValueError("duplicate actor id: %s" % aid)
+        actor_specs[aid] = _actor(*row[1:4], **(row[4] if len(row) > 4 else {}))
+
     ITEMS = items
     TOYS = {k: v for k, v in items.items() if v["kind"] == "toy"}
     FOODS = {k: v for k, v in items.items() if v["kind"] == "food"}
     IDS_BY_KIND = ids_by_kind
     CATS = cat_specs
     CATEGORIES = list(categories)
+    GOODS = good_specs
+    ACTORS = actor_specs
     CATALOG_VERSION += 1
 
 
-load_catalog(catalog.TOYS, catalog.FOODS, catalog.CATS, catalog.CATEGORIES)
+load_catalog(catalog.TOYS, catalog.FOODS, catalog.CATS, catalog.CATEGORIES,
+             catalog.GOODS, catalog.ACTORS)
 
 
 def cur_name(cur):
@@ -122,7 +172,7 @@ def price_text(item_id):
 # ---------------------------------------------------------------- 状態
 def _new_cat():
     return {"in_yard": False, "toy": "", "time_in_yard": 0, "total_time": 0,
-            "given_treasure": False, "met": False}
+            "given_treasure": False, "met": False, "fullness": 0.5}
 
 
 def new_state(now=None):
@@ -136,11 +186,20 @@ def new_state(now=None):
         "occ": {},                 # おもちゃID -> 遊んでいる猫ID(入った順)
         "food_stock": {},          # エサID -> 個数
         "food": "",                # 庭に出ているエサID
-        "food_remaining": 0,       # 残り分(tick)
+        "food_remaining": 0,       # 残り量(庭にいる猫が食べた分だけ減る。時間では減らない)
         "cats": {},                # 出会った猫だけ(猫ID -> 状態)。猫が何匹いても、セーブは出会った分だけで済む
         "met_order": [],           # 出会った順(図鑑の並び)
         "pending_money": [],       # [猫ID, 量, "s"/"g"]
         "pending_treasures": [],   # 猫ID
+        "player_name": "",         # プレイヤー名(表示用)
+        "level": 0,                # レベル(行動に応じて gain_level() で上がる)
+        "ever_had": set(),         # これまでに手に入れたことがある物のID(一度でも持てば残る)
+        "flags": set(),            # 立てたフラグ(文字列)。解放条件などに使う
+        "met_actors": {},          # 出会った訪問者・人(ID -> {trust, milestones_done, rewarded})
+        "owned_goods": set(),      # いま持っている物(GOODS のID)。庭には置かない、あげる専用の所持品
+        "pets": set(),             # もらった生き物(亀など)。今はデータとして持つだけ
+        "log": [],                 # 日時ログ [ [last_tick時点の時刻, 種類, 詳細], ... ] 直近 LOG_MAX 件
+        "created_at": now,
         "last_tick": now,
         "last_seen": now,
     }
@@ -173,6 +232,156 @@ def cats_in_yard(state):
 
 def fish(state, cur):
     return state[cur + "_fish"]
+
+
+# ---------------------------------------------------------------- レベル・条件判定・ログ
+LOG_MAX = 200
+
+
+def _log(state, kind, detail=None):
+    """日時ログに1件追加する(時刻はゲーム内時計 last_tick を使う)。直近 LOG_MAX 件だけ残す。"""
+    log = state.setdefault("log", [])
+    log.append([state["last_tick"], kind, detail])
+    if len(log) > LOG_MAX:
+        del log[: len(log) - LOG_MAX]
+
+
+LEVEL_GAINS = {
+    "met_new_cat": 1,
+    "chain_step": 3,           # 訪問者・人の鎖が1段階進んだとき(unlocks が付いた reward を受け取った)
+}
+
+
+def gain_level(state, reason):
+    """reason に応じてレベルを上げ、ログに残す(未知の reason は 0 なので何も起きない)。"""
+    gained = LEVEL_GAINS.get(reason, 0)
+    if gained <= 0:
+        return
+    state["level"] = state.get("level", 0) + gained
+    _log(state, "level_up", {"reason": reason, "level": state["level"]})
+
+
+def meets(state, requires):
+    """state が requires(複合条件の辞書)を満たしているか。requires が空/None なら常に True。
+    使える条件キー: level(以上か) / items(ever_had に全部あるか) / met(met_actors の人数以上か) / flag(立っているか)。"""
+    if not requires:
+        return True
+    if "level" in requires and state.get("level", 0) < requires["level"]:
+        return False
+    if "items" in requires and not set(requires["items"]) <= state.get("ever_had", set()):
+        return False
+    if "met" in requires and len(state.get("met_actors", {})) < requires["met"]:
+        return False
+    if "flag" in requires and requires["flag"] not in state.get("flags", set()):
+        return False
+    return True
+
+
+def set_player_name(state, name):
+    """プレイヤー名を設定する(前後の空白を除き、20文字まで)。"""
+    name = "" if name is None else str(name).strip()[:20]
+    state["player_name"] = name
+    return Result(True, "ok", "")
+
+
+# ---------------------------------------------------------------- 訪問者・人・物(取引品)
+CASUAL_GIFT_CHANCE = 0.02      # 1tickあたり、casual_gifts を渡すか判定する確率
+
+
+def parse_outcome(outcome):
+    """'item:smartphone' -> ('item', 'smartphone') のように分解する。"""
+    kind, _, value = outcome.partition(":")
+    return kind, value
+
+
+def _weighted_choice(pairs, rng):
+    """[(値, 重み), ...] から重み付きで1つ選ぶ。重みの合計が0以下なら None。"""
+    total = sum(w for _v, w in pairs)
+    if total <= 0:
+        return None
+    r = rng.random() * total
+    upto = 0.0
+    for value, w in pairs:
+        upto += w
+        if r <= upto:
+            return value
+    return pairs[-1][0]
+
+
+def apply_reward(state, reward, rng=random):
+    """milestones / one_time_reward の中身を state に反映する。
+    item は所持品に、creature はペットに加わり、unlocks があればフラグを立ててレベルも上がる。"""
+    if not reward:
+        return
+    if "item" in reward:
+        state["owned_goods"].add(reward["item"])
+        state["ever_had"].add(reward["item"])
+    if "creature" in reward:
+        state["pets"].add(reward["creature"])
+    unlocks = reward.get("unlocks")
+    if unlocks:
+        state["flags"].add("unlocked_" + unlocks)
+        gain_level(state, "chain_step")
+
+
+def _tick_actors(state, rng, events):
+    """訪問者・人の出現判定、一度きりの重要な贈り物(milestones)、たまの贈り物(casual_gifts)を進める。"""
+    for actor_id, actor in ACTORS.items():
+        met = state["met_actors"].get(actor_id)
+        if met is None:
+            if not meets(state, actor["requires"]):
+                continue
+            met = {"trust": 0.0, "milestones_done": [], "rewarded": False}
+            state["met_actors"][actor_id] = met
+            _log(state, "met_actor", actor_id)
+            events.append(("met_actor", actor_id))
+
+        for i, (req, reward) in enumerate(actor["milestones"]):
+            if i in met["milestones_done"]:
+                continue
+            if meets(state, req):
+                apply_reward(state, reward, rng)
+                met["milestones_done"].append(i)
+                _log(state, "milestone_gift", {"actor": actor_id, "index": i, "reward": reward})
+                events.append(("milestone_gift", actor_id, reward))
+
+        gifts = actor["casual_gifts"]
+        if gifts and rng.random() < CASUAL_GIFT_CHANCE:
+            outcome = _weighted_choice(gifts, rng)
+            if outcome:
+                kind, value = parse_outcome(outcome)
+                if kind == "item":
+                    state["owned_goods"].add(value)
+                    state["ever_had"].add(value)
+                    _log(state, "casual_gift", {"actor": actor_id, "item": value})
+                    events.append(("casual_gift", actor_id, value))
+
+
+def give(state, actor_id, item_id, rng=random):
+    """出会った人・訪問者(actor_id)に、持っている物(item_id)をあげる。
+    好みに合うほど信頼(trust)が上がり、初めて好みに合う物をもらったときだけ one_time_reward が渡る。
+    2回目以降に好みの物をあげても、reward は無く、反応(code/msg)が変わる。"""
+    actor = ACTORS.get(actor_id)
+    met = state["met_actors"].get(actor_id)
+    if actor is None or met is None:
+        return Result(False, "not_met", "まだ出会っていません。")
+    if item_id not in state["owned_goods"] or item_id not in GOODS:
+        return Result(False, "not_owned", "持っていません。")
+
+    item = GOODS[item_id]
+    score = sum(actor["wants"].get(tag, 0.0) * w for tag, w in item["tags"].items())
+    met["trust"] = met.get("trust", 0.0) + score
+    state["owned_goods"].discard(item_id)
+    _log(state, "gave_item", {"actor": actor_id, "item": item_id, "score": score})
+
+    if score <= 0:
+        return Result(True, "given_no_interest",
+                       "{0}に{1}をあげたけど、あまり興味は無さそうだった。".format(actor["name"], item["name"]))
+    if not met["rewarded"] and actor["one_time_reward"]:
+        apply_reward(state, actor["one_time_reward"], rng)
+        met["rewarded"] = True
+        return Result(True, "given_reward", "{0}はとても喜んで、お礼に何かをくれた!".format(actor["name"]))
+    return Result(True, "given_thanks", "{0}は喜んで受け取ってくれた。「ありがとう」".format(actor["name"]))
 
 
 # ---------------------------------------------------------------- 時間経過
@@ -212,6 +421,7 @@ def tick(state, rng=random, events=None):
     """1 分ぶん進める(元の update.tick と同じ順序)。"""
     ev = events if events is not None else []
     cats = state["cats"]
+    _decay_fullness(state)
     # 「庭にいる猫」を先に確定する(この tick で帰った猫は同 tick に再入場しない)
     in_yard = set(cats_in_yard(state))
     for cid in list(in_yard):
@@ -225,7 +435,7 @@ def tick(state, rng=random, events=None):
             if len(candidates) > 8:            # 猫が多いとき、先頭の猫ばかり席を取らないように順番を混ぜる
                 rng.shuffle(candidates)
             for cid in candidates:
-                if rng.random() < CATS[cid]["entry_chance"]:
+                if rng.random() < _entry_probability(state, cid):
                     toy = _pick_toy(state, cid, rng)
                     if toy is None:
                         continue
@@ -233,7 +443,20 @@ def tick(state, rng=random, events=None):
                         _join(state, cid, toy, ev)
                     else:
                         _try_push(state, cid, toy, rng, ev)
-        _reduce_food(state, ev)
+        _consume_food(state, ev)
+    _tick_actors(state, rng, ev)
+
+
+def _entry_probability(state, cid):
+    """来やすさ = 基本の entry_chance × 好み補正(taste) × 満腹度補正(fullness)。"""
+    spec = CATS[cid]
+    food_tags = FOODS[state["food"]]["tags"] if state["food"] else {}
+    taste_factor = 0.5 + taste_score(spec.get("taste"), food_tags)   # 好みが中立なら ×1.0
+    c = state["cats"].get(cid)
+    fullness = c["fullness"] if c else 0.5
+    fullness_factor = 1.0 - fullness * 0.6                          # 満腹(1.0)なら ×0.4、空腹(0.0)なら ×1.0
+    prob = spec["entry_chance"] * taste_factor * fullness_factor
+    return max(0.0, min(1.0, prob))
 
 
 def _time_to_leave(cat, spec, rng):
@@ -261,6 +484,8 @@ def _join(state, cid, toy, events):
         c["met"] = True
         state["met_order"].append(cid)
         events.append(("met", cid))
+        _log(state, "met_cat", cid)
+        gain_level(state, "met_new_cat")
     events.append(("arrive", cid, toy))
     if c["total_time"] > TREASURE_MINUTES and not c["given_treasure"]:
         c["given_treasure"] = True
@@ -291,14 +516,37 @@ def _leave(state, cid, rng, events):
     c["toy"] = ""
 
 
-def _reduce_food(state, events):
-    if state["food_remaining"] > 0:
-        state["food_remaining"] = max(state["food_remaining"] - 1, 0)
-        if state["food_remaining"] == 0:
+def _decay_fullness(state):
+    """出会った猫は、食べていない間ずっと少しずつ満腹度が下がる。"""
+    for c in state["cats"].values():
+        c["fullness"] = max(0.0, c["fullness"] - FULLNESS_DECAY_PER_TICK)
+
+
+def _consume_food(state, events):
+    """エサは時間経過でなく、庭にいる猫が食べた分だけ減る。食べた猫は満腹度が上がる。"""
+    if state["food_remaining"] <= 0:
+        state["food"] = ""
+        return
+    in_yard = cats_in_yard(state)
+    if not in_yard:
+        return                                  # 食べる猫がいなければ減らない
+    remaining = state["food_remaining"]
+    eaten_total = 0.0
+    for cid in in_yard:
+        if remaining - eaten_total <= 0:
+            break
+        appetite = CATS[cid]["traits"].get("appetite", DEFAULT_TRAITS["appetite"])
+        eaten = min(appetite * FOOD_CONSUME_PER_APPETITE, remaining - eaten_total)
+        if eaten <= 0:
+            continue
+        eaten_total += eaten
+        c = state["cats"][cid]
+        c["fullness"] = min(1.0, c["fullness"] + eaten * FULLNESS_PER_FOOD_UNIT)
+    if eaten_total > 0:
+        state["food_remaining"] = max(0.0, remaining - eaten_total)
+        if state["food_remaining"] <= 0:
             state["food"] = ""
             events.append(("food_out",))
-    else:
-        state["food"] = ""
 
 
 def launch_bonus(state, prev_seen, now, rng=random):
@@ -363,13 +611,13 @@ def set_food(state, food_id, force=False):
         return Result(False, "no_stock", "そのエサは持っていません")
     if state["food_remaining"] > 0 and not force:
         return Result(False, "need_confirm",
-                      "庭のエサ(残り{0}分)は捨てられます。置き換えますか?".format(state["food_remaining"]))
+                      "庭のエサ(残り{0})は捨てられます。置き換えますか?".format(round(state["food_remaining"])))
     state["food_stock"][food_id] -= 1
     if state["food_stock"][food_id] <= 0:
         del state["food_stock"][food_id]
     state["food"] = food_id
     state["food_remaining"] = FOODS[food_id]["size"]
-    return Result(True, "ok", "{0}を置きました(残り{1}分)".format(FOODS[food_id]["name"], state["food_remaining"]))
+    return Result(True, "ok", "{0}を置きました(残り{1})".format(FOODS[food_id]["name"], round(state["food_remaining"])))
 
 
 SHOP_FILTERS = (("all", "すべて"), ("buyable", "買える"), ("unowned", "未所持"))
@@ -424,8 +672,15 @@ def treasures_owned(state):
 
 
 # ---------------------------------------------------------------- 保存・読み込み
+_SET_FIELDS = ("ever_had", "flags", "owned_goods", "pets")
+
+
 def dumps(state):
-    return json.dumps(state, ensure_ascii=False)
+    out = dict(state)
+    for key in _SET_FIELDS:
+        if isinstance(out.get(key), set):
+            out[key] = sorted(out[key])
+    return json.dumps(out, ensure_ascii=False)
 
 
 def loads(text, now=None):
@@ -455,12 +710,44 @@ def _float(v, default):
         return default
 
 
+def _clamp01(v, default):
+    v = _float(v, default)
+    return max(0.0, min(1.0, v))
+
+
+def _clean_met_actor(v):
+    if not isinstance(v, dict):
+        return {"trust": 0.0, "milestones_done": [], "rewarded": False}
+    return {
+        "trust": _float(v.get("trust"), 0.0),
+        "milestones_done": [i for i in (v.get("milestones_done") or []) if isinstance(i, int)],
+        "rewarded": bool(v.get("rewarded", False)),
+    }
+
+
 def _sanitize(state, raw):
-    for key in ("s_fish", "g_fish", "food_remaining"):
+    for key in ("s_fish", "g_fish"):
         state[key] = _int(state[key])
+    state["food_remaining"] = max(0.0, _float(state["food_remaining"], 0.0))
     now = time.time()
     state["last_tick"] = _float(state["last_tick"], now)
     state["last_seen"] = _float(state["last_seen"], now)
+    state["created_at"] = _float(state.get("created_at"), state["last_tick"])
+
+    state["player_name"] = state["player_name"].strip()[:20] \
+        if isinstance(state.get("player_name"), str) else ""
+    state["level"] = _int(state.get("level", 0))
+    for key in _SET_FIELDS:
+        src = state.get(key)
+        state[key] = set(x for x in src if isinstance(x, str)) if isinstance(src, (list, set)) else set()
+    state["met_actors"] = {k: _clean_met_actor(v) for k, v in state["met_actors"].items() if isinstance(k, str)} \
+        if isinstance(state.get("met_actors"), dict) else {}
+    log = state.get("log")
+    if isinstance(log, list):
+        clean = [e for e in log if isinstance(e, list) and len(e) == 3]
+        state["log"] = clean[-LOG_MAX:]
+    else:
+        state["log"] = []
 
     owned = []
     for t in state["owned_toys"] if isinstance(state["owned_toys"], list) else []:
@@ -495,6 +782,7 @@ def _sanitize(state, raw):
         c["time_in_yard"] = _int(src.get("time_in_yard", 0))
         c["total_time"] = _int(src.get("total_time", 0))
         c["given_treasure"] = bool(src.get("given_treasure", False))
+        c["fullness"] = _clamp01(src.get("fullness", 0.5), 0.5)
         # met が無い旧セーブでも、遊んだ形跡があれば「出会い済み」扱いにする
         c["met"] = bool(src.get("met", False)) or c["in_yard"] \
             or c["total_time"] > 0 or c["given_treasure"]
