@@ -5,6 +5,7 @@ import statistics
 
 import pytest
 
+import catalog
 import game
 
 T0 = 1_000_000.0
@@ -322,6 +323,89 @@ def test_give_requires_meeting_and_owning_the_item():
     game._tick_actors(s, random.Random(0), [])
     s["owned_goods"].discard("smartphone")
     assert game.give(s, "jiro", "smartphone").code == "not_owned"
+
+
+# ---------------------------------------------------------------- 状態描写・validate_world
+def test_fullness_bucket_thresholds():
+    assert game._fullness_bucket(0.0) == "very_hungry"
+    assert game._fullness_bucket(0.24) == "very_hungry"
+    assert game._fullness_bucket(0.25) == "hungry"
+    assert game._fullness_bucket(0.49) == "hungry"
+    assert game._fullness_bucket(0.5) == "content"
+    assert game._fullness_bucket(0.74) == "content"
+    assert game._fullness_bucket(0.75) == "full"
+    assert game._fullness_bucket(1.0) == "full"
+
+
+def test_cat_flavor_text_none_when_not_in_yard():
+    s = fresh()
+    assert game.cat_flavor_text("gordo", s) is None
+
+
+def test_cat_flavor_text_prioritizes_hunger_over_toy():
+    s = fresh()
+    s["owned_toys"].append("rubber_ball")
+    game.place_toy(s, "rubber_ball")
+    game._join(s, "gordo", "rubber_ball", [])
+    s["cats"]["gordo"]["fullness"] = 0.1                # very_hungry
+    text = game.cat_flavor_text("gordo", s)
+    assert text in catalog.FULLNESS_LINES["very_hungry"]
+
+
+def test_cat_flavor_text_uses_toy_lines_and_falls_back_to_default():
+    s = fresh()
+    s["owned_toys"].append("rubber_ball")
+    game.place_toy(s, "rubber_ball")
+    game._join(s, "gordo", "rubber_ball", [])
+    s["cats"]["gordo"]["fullness"] = 0.9                 # very_hungry ではない
+    text = game.cat_flavor_text("gordo", s)
+    assert text in catalog.TOY_LINES["rubber_ball"]
+
+    s["cats"]["gordo"]["toy"] = "no_such_toy"            # TOY_LINES に無いおもちゃ
+    text = game.cat_flavor_text("gordo", s)
+    assert text in catalog.TOY_LINES["default"]
+
+
+def test_cat_flavor_text_is_stable_then_rerolls():
+    """数十tickは同じ一言を指し続け、間隔が来たら引き直す(乱数はその「いつ変わるか」だけに使う)。"""
+    s = fresh()
+    s["owned_toys"].append("rubber_ball")
+    game.place_toy(s, "rubber_ball")
+    game._join(s, "gordo", "rubber_ball", [])
+    c = s["cats"]["gordo"]
+    assert c["flavor_ticks"] == 0                        # 来たばかりなので、次のtickで即引く
+
+    rng = random.Random(0)
+    game.tick(s, rng, [])
+    first_idx, first_ticks = c["flavor_idx"], c["flavor_ticks"]
+    assert game.FLAVOR_MIN_TICKS <= first_ticks <= game.FLAVOR_MAX_TICKS
+
+    for _ in range(first_ticks - 1):                     # 間隔が来る直前まで
+        game.tick(s, rng, [])
+        assert c["flavor_idx"] == first_idx              # 引き直されない
+    game.tick(s, rng, [])                                 # ここで引き直される
+    assert c["flavor_ticks"] >= 1
+
+
+def test_validate_world_detects_id_collisions_and_bad_references():
+    orig_goods = catalog.GOODS
+    try:
+        catalog.GOODS = orig_goods + [('dry_food', 'ダミー', {}, '説明')]     # TOYS/FOODSと衝突するID
+        errors = catalog.validate_world()
+        assert any("dry_food" in e for e in errors)
+    finally:
+        catalog.GOODS = orig_goods
+
+    orig_actors = catalog.ACTORS
+    try:
+        catalog.ACTORS = [('bogus', 'person', 'ダミー', '説明',
+                            {'one_time_reward': {'item': 'no_such_good'}})]
+        errors = catalog.validate_world()
+        assert any("no_such_good" in e for e in errors)
+    finally:
+        catalog.ACTORS = orig_actors
+
+    assert catalog.validate_world() == []                # 実物のカタログは常にクリーンであるべき
 
 
 def test_invariants_hold_over_long_random_play():
