@@ -908,7 +908,7 @@ class App:
         sel = self.selected["cats"]
         if sel in s["cats"] and s["cats"][sel]["met"]:
             c = s["cats"][sel]
-            key = ("cat", sel, c["given_treasure"], c["in_yard"], c["toy"])
+            key = ("cat", sel, c["given_treasure"], c["in_yard"], c["toy"], c.get("flavor_idx"))
             self.cat_pager.set(key, self._cat_blocks(sel), self.wrap, SCREEN_W - 16, panel_h, group=sel)
             self.cat_pager.draw(self, 8, panel_y)
             self.pager_regs.append((self.cat_pager, 8, panel_y, SCREEN_W - 16, panel_h))
@@ -919,7 +919,10 @@ class App:
         """プロフィールの中身。伏せ字(まだ明かされていないお宝)は、本当の文と同じ長さの「？」で組む。
         こうすると、あとで明かされても行の数や位置が変わらない。"""
         spec, c = game.CATS[cid], self.state["cats"][cid]
-        now = "{0}で遊んでいる".format(game.TOYS[c["toy"]]["name"]) if c["in_yard"] else "今はいない"
+        if c["in_yard"]:
+            now = "{0}で、{1}".format(game.TOYS[c["toy"]]["name"], game.cat_flavor_text(cid, self.state))
+        else:
+            now = "今はいない"
         treasure = spec["treasure"] if c["given_treasure"] else "？" * len(spec["treasure"])
         return [(spec["name"], C_ACCENT),
                 (spec["desc"], C_TEXT),
