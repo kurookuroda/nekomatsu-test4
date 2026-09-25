@@ -111,3 +111,128 @@ ACTORS = [
       'wants': {'sweets': 1.0},
       'one_time_reward': {'item': 'amulet', 'unlocks': 'stage_mansion2'}}),
 ]
+
+# 満腹度(0〜1)の帯ごとの一言。境界は game.py の _fullness_bucket() を参照。
+FULLNESS_LINES = {
+    'very_hungry': [
+        'お腹が空いているようだ',
+        'じっとエサを見つめている',
+        'エサの匂いを嗅いでいる',
+        'うずうずと落ち着きがない',
+    ],
+    'hungry': [
+        '時々エサの方を見ている',
+        'のんびりしている',
+        'あくびをしている',
+        '毛づくろいをしている',
+    ],
+    'content': [
+        'くつろいでいる',
+        '目を細めている',
+        '気持ちよさそうにしている',
+        'のびをしている',
+    ],
+    'full': [
+        'ご機嫌で鳴いている',
+        '満足そうにしている',
+        'ごろごろ喉を鳴らしている',
+        'ふわふわしっぽを立てている',
+    ],
+}
+
+# おもちゃIDごとの、遊んでいるときの一言。対応が無いおもちゃは 'default' を使う。
+TOY_LINES = {
+    'rubber_ball': ['ボールを追いかけている', 'ボールを前足で押している', 'ボールを転がして遊んでいる'],
+    'sparkle_ball': ['きらめくボールに見入っている', 'ボールのラメを目で追っている', 'ボールにじゃれついている'],
+    'yarn_ball': ['毛糸玉を転がしている', '毛糸を前足で絡め取っている', '毛糸玉に飛びついている'],
+    'fancy_yarn_ball': ['高級毛糸にうっとりしている', '色とりどりの毛糸で遊んでいる', '毛糸を丁寧にほぐしている'],
+    'tennis_ball': ['テニスボールを追いかけている', 'ボールを咥えて運んでいる', 'ボールを蹴って遊んでいる'],
+    'paper_bag': ['紙袋に頭を突っ込んでいる', '紙袋の中で動いている', '紙袋をガサガサ鳴らしている'],
+    'scratching_post': ['爪とぎで爪を研いでいる', '爪とぎに体をこすりつけている', '爪とぎの上で伸びをしている'],
+    'fancy_scratching_post': ['高級な爪とぎを堪能している', '爪とぎに背中をこすりつけている', '爪とぎの上でくつろいでいる'],
+    'fishbowl': ['金魚をじっと見つめている', '金魚鉢の前から動かない', '金魚を前足でつつこうとしている'],
+    'small_condo': ['ハウスの中で丸まっている', 'ハウスから顔だけ出している', 'ハウスの入り口で毛づくろいしている'],
+    'medium_condo': ['ハウスでくつろいでいる', 'ハウスの中を気に入っている', 'ハウスの窓から外を見ている'],
+    'large_condo': ['広いハウスを満喫している', 'ハウスのてっぺんでくつろいでいる', 'ハウスの中を歩き回っている'],
+    'catnip': ['マタタビの匂いに夢中になっている', 'マタタビの袋に頬ずりしている', 'マタタビでゴロゴロ転がっている'],
+    'plain_pillow': ['クッションの上で丸まっている', 'クッションを踏んでいる', 'クッションに顔をうずめている'],
+    'tie_dye_pillow': ['ふかふかのクッションでくつろいでいる', 'クッションに丸まって眠そうにしている', 'クッションを揉んでいる'],
+    'plastic_bucket': ['バケツの中に収まっている', 'バケツの縁に前足をかけている', 'バケツをカタカタ鳴らしている'],
+    'cereal_box': ['シリアルの箱に入っている', '箱の中から顔だけ出している', '箱の縁で爪を研いでいる'],
+    'fruit_box': ['果物の箱にすっぽり収まっている', '箱の中で丸まっている', '箱から顔だけのぞかせている'],
+    'large_box': ['大きな箱の中を探検している', '箱の中で隠れている', '箱の出入りを繰り返している'],
+    'butterfly_toy': ['蝶々のおもちゃを追いかけている', '蝶々に飛びかかろうとしている', '蝶々をじっと見つめている'],
+    'laser_pointer': ['光の点を追いかけている', '光を捕まえようとしている', '光の点をじっと見つめている'],
+    'rainbow_umbrella': ['傘の下でくつろいでいる', '虹色の傘を見上げている', '傘の陰で丸まっている'],
+    'plain_umbrella': ['傘の下で雨宿り気分でいる', '傘の陰でくつろいでいる', '傘の下を出たり入ったりしている'],
+    'plush_froggy': ['カエルのぬいぐるみを抱きしめている', 'ぬいぐるみを前足で押している', 'ぬいぐるみを甘噛みしている'],
+    'default': ['のんびりしている', '周りを見ている', 'くつろいでいる'],
+}
+
+# ショップでの店主のひとこと(購入時などに使う)
+SHOP_KEEPER_LINES = ['まいどあり', 'ナイスチョイスですよ', 'すてきなチョイスですよ', 'これはおすすめですよ']
+
+
+def validate_world():
+    """ID の重複や参照切れが無いかを確認する。game.py の load_catalog() が起動時に呼ぶ。
+    エラーの文字列リストを返す。問題がなければ空リスト。"""
+    errors = []
+
+    def ids_of(rows):
+        return [r[0] for r in rows]
+
+    groups = {'TOYS': ids_of(TOYS), 'FOODS': ids_of(FOODS), 'CATS': ids_of(CATS),
+              'GOODS': ids_of(GOODS), 'ACTORS': ids_of(ACTORS)}
+    for label, ids in groups.items():
+        if len(ids) != len(set(ids)):
+            errors.append('{0} にIDの重複があります'.format(label))
+
+    seen = {}
+    for label, ids in groups.items():
+        for i in ids:
+            if i in seen and seen[i] != label:
+                errors.append("'{0}' が {1} と {2} でIDが衝突しています".format(i, seen[i], label))
+            seen.setdefault(i, label)
+
+    good_ids = set(groups['GOODS'])
+
+    def check_outcome(actor_id, where, outcome):
+        kind, value = outcome.split(':', 1) if ':' in outcome else (outcome, '')
+        if kind == 'item' and value not in good_ids:
+            errors.append("{0} の{1} '{2}' が GOODS にありません".format(actor_id, where, outcome))
+
+    def check_reward(actor_id, where, reward):
+        if not reward:
+            return
+        if 'item' in reward and reward['item'] not in good_ids:
+            errors.append("{0} の{1} の item '{2}' が GOODS にありません".format(actor_id, where, reward['item']))
+
+    for actor_id, kind, name, desc, opts in ACTORS:
+        for req, reward in opts.get('milestones', []):
+            check_reward(actor_id, 'milestones', reward)
+        for outcome, _w in opts.get('casual_gifts', []):
+            check_outcome(actor_id, 'casual_gifts', outcome)
+        check_reward(actor_id, 'one_time_reward', opts.get('one_time_reward'))
+        wants = opts.get('wants', {})
+        if wants:
+            good_tags = {tag for g in GOODS for tag in g[2]}
+            for tag in wants:
+                if tag not in good_tags:
+                    errors.append("{0} の wants のタグ '{1}' を持つ GOODS がありません".format(actor_id, tag))
+
+    for tid, name, cost, cur, size, desc in TOYS:
+        if tid not in TOY_LINES:
+            pass  # TOY_LINES は無くても 'default' で表示できるので、無くてもエラーにはしない
+
+    return errors
+
+
+def validate_world_or_raise():
+    errors = validate_world()
+    if errors:
+        raise ValueError('\n'.join(errors))
+
+
+if __name__ == '__main__':
+    validate_world_or_raise()
+    print('OK: catalog is consistent')
