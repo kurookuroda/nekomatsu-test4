@@ -43,6 +43,7 @@ DEFAULT_TRAITS = {"appetite": 0.5, "friendly": 0.5, "wary": 0.5}   # 個性の�
 FOOD_CONSUME_PER_APPETITE = 1.0    # appetite=1.0 の猫が1tickで食べるエサの量
 FULLNESS_PER_FOOD_UNIT = 0.02      # 食べた量 → 満腹度(0〜1)への変換率
 FULLNESS_DECAY_PER_TICK = 0.01     # 何も食べていない間、1tickごとに満腹度が下がる速さ
+FLAVOR_MIN_TICKS, FLAVOR_MAX_TICKS = 20, 40   # 「にわ」「ずかん」の一言描写を引き直すまでの間隔(分)
 
 Result = namedtuple("Result", "ok code msg")
 
@@ -99,7 +100,9 @@ def _actor(kind, name, desc, requires=None, wants=None, one_time_reward=None,
 
 def load_catalog(toys, foods, cats, categories, goods=(), actors=()):
     """アイテムと猫、物・訪問者/人のデータ表を読み込む(既定は catalog.py)。
-    ID の重複や不正な値は ValueError。"""
+    ID の重複や不正な値は ValueError。あわせて catalog.py 自身の整合性(GOODS/ACTORS の
+    ID衝突・参照切れなど)も catalog.validate_world_or_raise() で毎回チェックする。"""
+    catalog.validate_world_or_raise()
     global ITEMS, TOYS, FOODS, IDS_BY_KIND, CATS, CATEGORIES, GOODS, ACTORS, CATALOG_VERSION
     items, cat_specs = {}, {}
     for row in toys:
@@ -172,7 +175,8 @@ def price_text(item_id):
 # ---------------------------------------------------------------- 状態
 def _new_cat():
     return {"in_yard": False, "toy": "", "time_in_yard": 0, "total_time": 0,
-            "given_treasure": False, "met": False, "fullness": 0.5}
+            "given_treasure": False, "met": False, "fullness": 0.5,
+            "flavor_idx": 0, "flavor_ticks": 0}   # 外から見た描写(にわ・ずかん用)。数十tickごとに引き直す
 
 
 def new_state(now=None):
@@ -427,6 +431,10 @@ def tick(state, rng=random, events=None):
     for cid in list(in_yard):
         c = cats[cid]
         c["time_in_yard"] += 1
+        c["flavor_ticks"] -= 1
+        if c["flavor_ticks"] <= 0:
+            c["flavor_idx"] = rng.randrange(1000)
+            c["flavor_ticks"] = rng.randint(FLAVOR_MIN_TICKS, FLAVOR_MAX_TICKS)
         if _time_to_leave(c, CATS[cid], rng):
             _leave(state, cid, rng, ev)
     if state["food"]:
@@ -480,6 +488,7 @@ def _join(state, cid, toy, events):
     state["occ"][toy].append(cid)
     c["in_yard"] = True
     c["toy"] = toy
+    c["flavor_ticks"] = 0                  # 来たばかりなので、次のtickですぐ一言を引く
     if not c["met"]:                       # 図鑑での位置は「はじめて庭に来た順」で、このとき決まる
         c["met"] = True
         state["met_order"].append(cid)
@@ -520,6 +529,30 @@ def _decay_fullness(state):
     """出会った猫は、食べていない間ずっと少しずつ満腹度が下がる。"""
     for c in state["cats"].values():
         c["fullness"] = max(0.0, c["fullness"] - FULLNESS_DECAY_PER_TICK)
+
+
+def _fullness_bucket(fullness):
+    if fullness < 0.25:
+        return "very_hungry"
+    if fullness < 0.5:
+        return "hungry"
+    if fullness < 0.75:
+        return "content"
+    return "full"
+
+
+def cat_flavor_text(cid, state):
+    """庭にいる猫の、いまの様子の一言(にわ・ずかん用)。庭にいなければ None。
+    とてもお腹が空いているときはそれを優先して見せ、それ以外は遊んでいるおもちゃに応じた一言を見せる。
+    表示する文自体は flavor_idx が変わるまで(数十tickに1回)同じものを指し続ける。"""
+    c = state["cats"].get(cid)
+    if not c or not c["in_yard"]:
+        return None
+    if _fullness_bucket(c["fullness"]) == "very_hungry":
+        lines = catalog.FULLNESS_LINES["very_hungry"]
+    else:
+        lines = catalog.TOY_LINES.get(c["toy"], catalog.TOY_LINES["default"])
+    return lines[c["flavor_idx"] % len(lines)]
 
 
 def _consume_food(state, events):
@@ -580,7 +613,7 @@ def buy(state, item_id):
         state["owned_toys"].append(item_id)
     else:
         state["food_stock"][item_id] = state["food_stock"].get(item_id, 0) + 1
-    return Result(True, "ok", "まいど! すばらしい選択です!")
+    return Result(True, "ok", random.choice(catalog.SHOP_KEEPER_LINES))
 
 
 def place_toy(state, toy_id):
@@ -783,6 +816,8 @@ def _sanitize(state, raw):
         c["total_time"] = _int(src.get("total_time", 0))
         c["given_treasure"] = bool(src.get("given_treasure", False))
         c["fullness"] = _clamp01(src.get("fullness", 0.5), 0.5)
+        c["flavor_idx"] = _int(src.get("flavor_idx", 0))
+        c["flavor_ticks"] = _int(src.get("flavor_ticks", 0))
         # met が無い旧セーブでも、遊んだ形跡があれば「出会い済み」扱いにする
         c["met"] = bool(src.get("met", False)) or c["in_yard"] \
             or c["total_time"] > 0 or c["given_treasure"]
