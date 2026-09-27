@@ -82,6 +82,7 @@ GOODS = [
 #   種類: "visitor"(通り過ぎるだけ、たまに物をくれる) / "person"(居着く。物をあげると反応する)
 #   個性のキー:
 #     requires: 現れる条件(meets() に渡す辞書。省略時は常に出現)
+#     habitat: [場所ID, ...] 出現しうる場所(PLACES)のリスト。省略時は空(どこにも出ない)
 #     milestones: [(requires_or_None, reward), ...] 条件を満たすたびに、まだ渡していない最初の1件を渡す、
 #                 一度きりの重要な贈り物(None は「出会った時点」を意味する)
 #     casual_gifts: [(outcome, 重み), ...] 居る間、低確率で繰り返しくれる、ちょっとした贈り物
@@ -93,8 +94,9 @@ ACTORS = [
     ('catseye_a', 'visitor', 'キャツアイの誰か',
      '使い古し電子機器を引き取って売り買いしている。お金にはこだわらず、猫を愛している。',
      {'requires': {'level': 5},
+      'habitat': ['garden'],
       'milestones': [
-          (None, {'item': 'smartphone'}),                             # 出会ったら必ずスマホをくれる
+          (None, {'item': 'smartphone', 'unlocks': 'stage_mansion'}),  # 出会ったら必ずスマホをくれる。これが屋敷の解放条件
           ({'flag': 'unlocked_obaachan'}, {'item': 'laptop'}),         # 話が進むと、また大事な物を持ってきてくれる
       ],
       'casual_gifts': [('item:sweets', 1.0)]}),                       # たまに、おまけでお菓子もくれる
@@ -102,14 +104,24 @@ ACTORS = [
     ('jiro', 'person', 'じろうさん',
      '愛想はよくないが、電子機器の面倒な相談に乗ってくれる。何かお礼を渡すと喜ぶらしい。',
      {'requires': {'items': ['smartphone']},
+      'habitat': ['mansion'],
       'wants': {'electronics': 1.0},
       'one_time_reward': {'creature': 'turtle', 'unlocks': 'obaachan'}}),
 
     ('obaachan', 'person', 'おばあちゃん',
      '庭の隅にいつの間にか腰掛けている。甘い物に目がないようだ。',
      {'requires': {'flag': 'unlocked_obaachan'},
+      'habitat': ['mansion'],
       'wants': {'sweets': 1.0},
       'one_time_reward': {'item': 'amulet', 'unlocks': 'stage_mansion2'}}),
+]
+
+# 場所: (ID, 表示名, マス数, 解放条件)
+#   解放条件: requires 辞書(meets() に渡す)または None(最初から解放)
+PLACES = [
+    ('garden', '庭', 6, None),
+    ('mansion', '屋敷', 12, {'flag': 'unlocked_stage_mansion'}),
+    ('mansion2', '屋敷の奥', 10, {'flag': 'unlocked_stage_mansion2'}),
 ]
 
 # 満腹度(0〜1)の帯ごとの一言。境界は game.py の _fullness_bucket() を参照。
@@ -195,6 +207,9 @@ def validate_world():
             seen.setdefault(i, label)
 
     good_ids = set(groups['GOODS'])
+    place_ids = ids_of(PLACES)
+    if len(place_ids) != len(set(place_ids)):
+        errors.append('PLACES にIDの重複があります')
 
     def check_outcome(actor_id, where, outcome):
         kind, value = outcome.split(':', 1) if ':' in outcome else (outcome, '')
@@ -219,6 +234,9 @@ def validate_world():
             for tag in wants:
                 if tag not in good_tags:
                     errors.append("{0} の wants のタグ '{1}' を持つ GOODS がありません".format(actor_id, tag))
+        for pid in opts.get('habitat', []):
+            if pid not in place_ids:
+                errors.append("{0} の habitat '{1}' が PLACES にありません".format(actor_id, pid))
 
     for tid, name, cost, cur, size, desc in TOYS:
         if tid not in TOY_LINES:
