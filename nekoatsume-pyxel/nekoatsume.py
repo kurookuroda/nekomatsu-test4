@@ -30,7 +30,7 @@ class App:
         # 画面の状態
         self.screen = "yard"
         self.sub = {"bag": None, "cats": 0}    # bag: None=すべて 0=おもちゃ 1=エサ 2=所持品 / cats: 0=猫 1=ひと
-        self.selected = {"shop": None, "cats": None, "people": None}
+        self.selected = {"shop": None, "cats": None, "people": None, "yard": None, "goods": None}
         self.scroll = {}
         self.log = []                          # [{"full": 折り返し済みテキスト, "revealed": int}]
         self.log_timer = 0
@@ -518,6 +518,7 @@ class App:
         s = self.state
         item_id = self.give_picker
         recipients = [aid for aid in game.ACTORS if aid in s["met_actors"] and game.ACTORS[aid]["kind"] == "person"]
+        wanted = set(game.likely_recipients(s, item_id))
         x, y, w = 24, 70, SCREEN_W - 48
         h = 34 + max(len(recipients), 1) * ROW_H
         self.draw_panel(x, y, w, h)
@@ -526,8 +527,8 @@ class App:
             self.tx(x + 10, y + 26, "渡せる相手にまだ出会っていません", C_SUB)
         for i, aid in enumerate(recipients):
             ry = y + 24 + i * ROW_H
-            self.button(x + 10, ry, w - 20, ROW_H - 2, game.ACTORS[aid]["name"],
-                        lambda aid=aid: self.do_give(aid))
+            label = game.ACTORS[aid]["name"] + ("" if aid in wanted else "(欲しくなさそう)")
+            self.button(x + 10, ry, w - 20, ROW_H - 2, label, lambda aid=aid: self.do_give(aid))
         self.close_button(x + w - 20, y + 6, 14, 14, self.close_give_picker)
 
     def close_give_picker(self):
@@ -551,12 +552,36 @@ class App:
     # ---- にわ
     def draw_yard(self):
         s = self.state
+        places = game.available_places(s)
+        food_y = 22
+        if len(places) > 1:                                     # 屋敷が解放されるまではタブを出さない
+            for i, pid in enumerate(places):
+                label = game.PLACES[pid]["name"]
+                self.button(8 + i * 68, 20, 64, 16, label,
+                            lambda pid=pid: self.do_switch_place(pid), active=(pid == s["current_place"]))
+            food_y = 40
         if s["food"]:
-            self.tx(8, 22, "エサ: {0} 残り{1}".format(game.FOODS[s["food"]]["name"], round(s["food_remaining"])), C_GOOD)
+            self.tx(8, food_y, "エサ: {0} 残り{1}".format(game.FOODS[s["food"]]["name"], round(s["food_remaining"])), C_GOOD)
         else:
-            self.tx(8, 22, "エサがありません(もちもの→エサ)", C_BAD)
+            self.tx(8, food_y, "エサがありません(もちもの→エサ)", C_BAD)
 
-        y = 38
+        in_yard = [cid for cid in s["cats"] if s["cats"][cid]["in_yard"] and s["cats"][cid]["place"] == s["current_place"]]
+        selected_cat = self.selected.get("yard")
+        y = food_y + 12
+        if in_yard:
+            for cid in in_yard:
+                color = C_ACCENT if cid == selected_cat else C_TEXT
+                self.tx(8, y, game.CATS[cid]["name"], color)
+                self.hit(8, y, SCREEN_W - 16, LINE_H, lambda cid=cid: self.select("yard", cid))
+                y += LINE_H
+            if selected_cat in in_yard:
+                trust = s["cats"][selected_cat]["trust"]
+                can_pet = trust >= 0.8
+                label = "撫でる" if can_pet else "撫でる(なつき度{0:.1f}/0.8)".format(trust)
+                self.button(8, y, 150, 16, label, lambda: self.try_pet(selected_cat), enabled=can_pet)
+                y += 20
+            y += 4
+
         yard_bottom = y
         if not s["yard"]:
             for i, line in enumerate(self.wrap("庭にはおもちゃがありません。ショップで買って、もちものから置こう", SCREEN_W - 16)):
@@ -593,6 +618,20 @@ class App:
                     self.do_collect, enabled=bool(n_money))
         self.button(130, buttons_y, 118, 20, "お宝を受け取る({0})".format(n_tre) if n_tre else "お宝 なし",
                     self.do_treasures, enabled=bool(n_tre))
+
+    def try_pet(self, cid):
+        r = game.pet(self.state, cid)
+        self.show_toast(r.msg, C_GOOD if r.ok else C_BAD)
+        if r.ok:
+            self.save()
+
+    def do_switch_place(self, pid):
+        r = game.switch_place(self.state, pid)
+        if r.ok:
+            self.selected["yard"] = None
+        else:
+            self.show_toast(r.msg, C_BAD)
+        self.save()
 
     def do_collect(self):
         got = game.collect(self.state)
@@ -802,7 +841,9 @@ class App:
     def draw_bag(self):
         s = self.state
         self.sub_tabs("bag", ("おもちゃ", "エサ", "所持品"))
-        self.tx_right(SCREEN_W - 8, 22, "庭 {0}/{1}マス".format(game.space_used(s), game.SPACE), C_SUB)
+        place_name = game.PLACES[s["current_place"]]["name"]
+        place_space = game.PLACES[s["current_place"]]["space"]
+        self.tx_right(SCREEN_W - 8, 22, "{0} {1}/{2}マス".format(place_name, game.space_used(s), place_space), C_SUB)
 
         sub = self.sub["bag"]
         toys = list(s["owned_toys"])
@@ -824,9 +865,9 @@ class App:
             item_id = ids[i]
             if item_id in game.GOODS:
                 g = game.GOODS[item_id]
-                self.tx(12, ry + 2, g["name"], C_TEXT)
-                self.tx_right(ROW_RIGHT, ry + 2, "あげる", C_SUB)
-                fn = (lambda g=item_id: self.open_give_picker(g))
+                self.tx(12, ry + 2, g["name"], C_ACCENT if self.selected.get("goods") == item_id else C_TEXT)
+                self.tx_right(ROW_RIGHT, ry + 2, "しらべる", C_SUB)
+                fn = (lambda g=item_id: self.select("goods", g))
             else:
                 it = game.ITEMS[item_id]
                 if it["kind"] == "toy":
@@ -841,13 +882,45 @@ class App:
                     fn = (lambda f=item_id: self.do_set_food(f))
             self.hit(8, ry, SCREEN_W - 16, ROW_H, fn, clip)
 
-        self.list_view("bag-" + str(self.sub["bag"]), 8, 40, SCREEN_W - 16, 150, len(ids), row)
+        list_h = 110 if sub == 2 else 150
+        self.list_view("bag-" + str(self.sub["bag"]), 8, 40, SCREEN_W - 16, list_h, len(ids), row)
 
-        self.draw_panel(8, 196, SCREEN_W - 16, 28)
-        if s["food"]:
-            self.tx(14, 203, "庭のエサ: {0} 残り{1}".format(game.FOODS[s["food"]]["name"], round(s["food_remaining"])), C_GOOD)
+        panel_y = 40 + list_h + 6
+        if sub == 2:
+            self.draw_goods_detail(panel_y, TAB_Y - 4 - panel_y)
         else:
-            self.tx(14, 203, "庭のエサ: なし", C_BAD)
+            self.draw_panel(8, panel_y, SCREEN_W - 16, 28)
+            if s["food"]:
+                self.tx(14, panel_y + 7, "庭のエサ: {0} 残り{1}".format(game.FOODS[s["food"]]["name"], round(s["food_remaining"])), C_GOOD)
+            else:
+                self.tx(14, panel_y + 7, "庭のエサ: なし", C_BAD)
+
+    def draw_goods_detail(self, panel_y, panel_h):
+        """所持品の「しらべる」パネル。手に入れた経緯と、喜んでくれそうな相手のヒントを出す。"""
+        s = self.state
+        self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
+        item_id = self.selected.get("goods")
+        if item_id not in s["owned_goods"]:
+            self.tx(14, panel_y + 8, "所持品をタップすると、しらべられます", C_SUB)
+            return
+        g = game.GOODS[item_id]
+        origin = s["item_origin"].get(item_id)
+        if origin and origin.get("actor") in game.ACTORS:
+            origin_text = "{0}からもらった".format(game.ACTORS[origin["actor"]]["name"])
+        else:
+            origin_text = "手に入れた経緯は不明"
+        wanted_by = game.likely_recipients(s, item_id)
+        if wanted_by:
+            want_text = "喜んでくれそう: " + "、".join(game.ACTORS[a]["name"] for a in wanted_by)
+            want_color = C_GOOD
+        else:
+            want_text = "いま渡せる相手には、まだ欲しがられていなさそう"
+            want_color = C_SUB
+        self.tx(14, panel_y + 6, "{0} — {1}".format(g["name"], g["desc"]), C_TEXT)
+        self.tx(14, panel_y + 6 + LINE_H, origin_text, C_SUB)
+        self.tx(14, panel_y + 6 + LINE_H * 2, want_text, want_color)
+        self.button(14, panel_y + panel_h - 22, SCREEN_W - 44, 16,
+                    "あげる", lambda item_id=item_id: self.open_give_picker(item_id))
 
     def do_toggle_toy(self, toy_id):
         s = self.state
@@ -908,7 +981,7 @@ class App:
         sel = self.selected["cats"]
         if sel in s["cats"] and s["cats"][sel]["met"]:
             c = s["cats"][sel]
-            key = ("cat", sel, c["given_treasure"], c["in_yard"], c["toy"], c.get("flavor_idx"))
+            key = ("cat", sel, c["given_treasure"], c["in_yard"], c["toy"], c.get("flavor_idx"), c.get("place"))
             self.cat_pager.set(key, self._cat_blocks(sel), self.wrap, SCREEN_W - 16, panel_h, group=sel)
             self.cat_pager.draw(self, 8, panel_y)
             self.pager_regs.append((self.cat_pager, 8, panel_y, SCREEN_W - 16, panel_h))
@@ -919,8 +992,10 @@ class App:
         """プロフィールの中身。伏せ字(まだ明かされていないお宝)は、本当の文と同じ長さの「？」で組む。
         こうすると、あとで明かされても行の数や位置が変わらない。"""
         spec, c = game.CATS[cid], self.state["cats"][cid]
-        if c["in_yard"]:
+        if c["in_yard"] and c["place"] == self.state["current_place"]:
             now = "{0}で、{1}".format(game.TOYS[c["toy"]]["name"], game.cat_flavor_text(cid, self.state))
+        elif c["in_yard"]:
+            now = "{0}で遊んでいるらしい".format(game.PLACES[c["place"]]["name"])
         else:
             now = "今はいない"
         treasure = spec["treasure"] if c["given_treasure"] else "？" * len(spec["treasure"])
